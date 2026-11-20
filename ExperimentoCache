@@ -1,0 +1,99 @@
+public class ExperimentoCache {
+
+    static final int repeticoes = 5;
+    static final int[] tamanhoPadro = {1000, 2000, 4000};
+
+    static long sink;
+
+    interface Percurso {
+        double executar(int[][] m);
+    }
+
+    static int[][] criarMatriz(int n) {
+        int[][] m = new int[n][n];
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++)
+                m[i][j] = i + j;
+        return m;
+    }
+
+    static double somaPorLinhas(int[][] m) {
+        long inicio = System.nanoTime();
+        long soma = 0;
+        for (int i = 0; i < m.length; i++)
+            for (int j = 0; j < m.length; j++)
+                soma += m[i][j];
+        long fim = System.nanoTime();
+        sink += soma;
+        return (fim - inicio) / 1_000_000.0; // ms
+    }
+
+    static double somaPorColunas(int[][] m) {
+        long inicio = System.nanoTime();
+        long soma = 0;
+        for (int j = 0; j < m.length; j++)
+            for (int i = 0; i < m.length; i++)
+                soma += m[i][j];
+        long fim = System.nanoTime();
+        sink += soma;
+        return (fim - inicio) / 1_000_000.0; // ms
+    }
+
+    static double media(Percurso p, int[][] m, int repeticoes) {
+        double total = 0;
+        for (int r = 0; r < repeticoes; r++)
+            total += p.executar(m);
+        return total / repeticoes;
+    }
+
+    static void aquecerJit() {
+        int[][] m = criarMatriz(1500);
+        for (int k = 0; k < 10; k++) {
+            somaPorLinhas(m);
+            somaPorColunas(m);
+        }
+    }
+
+    static int[] lerTamanhos(String[] args) {
+        if (args.length == 0)
+            return tamanhoPadro;
+        int[] tamanhos = new int[args.length];
+        for (int i = 0; i < args.length; i++) {
+            tamanhos[i] = Integer.parseInt(args[i]);
+            if (tamanhos[i] <= 0)
+                throw new IllegalArgumentException("Tamanho inválido: " + args[i]);
+        }
+        return tamanhos;
+    }
+
+    static void medirTamanho(int n) {
+        int[][] m = criarMatriz(n);
+
+        somaPorLinhas(m);
+        somaPorColunas(m);
+
+        double mediaLinhas = media(ExperimentoCache::somaPorLinhas, m, repeticoes);
+        double mediaColunas = media(ExperimentoCache::somaPorColunas, m, repeticoes);
+
+        System.out.printf("%-10s %-16.2f %-16.2f %-10.2f%n",
+                n + "x" + n, mediaLinhas, mediaColunas, mediaColunas / mediaLinhas);
+    }
+
+    public static void main(String[] args) {
+        int[] tamanhos = lerTamanhos(args);
+
+        aquecerJit();
+
+        System.out.println("Experimento de hierarquia de memória (P1)");
+        System.out.println("Repetições por medição: " + repeticoes);
+        System.out.println();
+        System.out.printf("%-10s %-16s %-16s %-10s%n",
+                "Tamanho", "Linhas (ms)", "Colunas (ms)", "Razão");
+
+        for (int n : tamanhos)
+            medirTamanho(n);
+
+        System.out.println();
+        System.out.println("Checksum (evita eliminação do laço pelo JIT): " + sink);
+    }
+}
