@@ -1,0 +1,243 @@
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+public class Main {
+    static final String REFS = "7 0 1 2 0 3 0 4 2 3 0 3 2 1 2 0 1 7 0 1";
+    static final String BELADY = "1 2 3 4 1 2 5 1 2 3 4 5";
+    static final String OPS = "A P1 200; A P2 300; A P3 100; A P4 250; A P5 150; L P2; L P4; A P6 100; A P7 120; A P8 260";
+    static final String OPS_PAG = OPS + "; T P1 130; T P7 110 W; T P1 250";
+    static final String[] ALGS = {"FIFO", "LRU", "Ótimo", "Relógio"};
+    static final Map<String, String> o = new HashMap<>();
+
+    public static void main(String[] a) {
+        System.setOut(new PrintStream(System.out, true, StandardCharsets.UTF_8));
+        for (int i = 1; i + 1 < a.length; i += 2) o.put(a[i].substring(2), a[i + 1]);
+        String c = a.length > 0 ? a[0] : "tudo";
+        boolean tudo = c.equals("tudo");
+        if (tudo || c.equals("etapa1")) etapa1(num("memoria", 1000), o.getOrDefault("ops", OPS));
+        if (tudo || c.equals("etapa2")) etapa2(num("frames", 20), num("tam-pagina", 50), o.getOrDefault("ops", OPS_PAG));
+        if (tudo || c.equals("etapa3")) etapa3(num("frames", 3), o.getOrDefault("refs", REFS));
+        if (tudo || c.equals("belady"))
+            for (String s : o.containsKey("refs") ? new String[] {o.get("refs")} : new String[] {REFS, BELADY}) belady(s);
+        if (tudo || c.equals("varrer")) varrer(o.getOrDefault("refs", REFS), 1, 7);
+        if (tudo || c.equals("ex423")) ex423();
+        if (!tudo && !c.matches("etapa[123]|belady|varrer|ex423"))
+            System.out.println("Comandos: etapa1 | etapa2 | etapa3 | belady | varrer | ex423 | tudo");
+    }
+
+    static int num(String k, int padrao) {
+        return Integer.parseInt(o.getOrDefault(k, "" + padrao).trim());
+    }
+
+    static List<int[]> buracos(String[] m) { 
+        List<int[]> l = new ArrayList<>();
+        for (int i = 0; i < m.length; i++) {
+            if (m[i] != null) continue;
+            if (i > 0 && m[i - 1] == null) l.get(l.size() - 1)[1]++;
+            else l.add(new int[] {i, 1});
+        }
+        return l;
+    }
+
+    static void mapa(String[] m) {
+        for (int i = 0, j; i < m.length; i = j) {
+            for (j = i; j < m.length && Objects.equals(m[j], m[i]); j++) ;
+            System.out.printf("   [%4d - %4d] %-6s %4d KB%n", i, j - 1, m[i] == null ? "LIVRE" : m[i], j - i);
+        }
+    }
+
+    static void etapa1(int mem, String ops) {
+        String[] nomes = {"First-Fit", "Best-Fit", "Worst-Fit"};
+        for (int e = 0; e < 3; e++) {
+            String[] m = new String[mem];
+            int ok = 0, fragmentacao = 0, semMemoria = 0;
+            System.out.println("\n===== ETAPA 1 - " + nomes[e] + " | memória = " + mem + " KB =====");
+            for (String op : ops.split(";")) {
+                String[] t = op.trim().split("\\s+");
+                System.out.println("\n>> " + op.trim());
+                if (t[0].equals("A")) {
+                    int tam = Integer.parseInt(t[2]);
+                    int[] h = null;
+                    for (int[] b : buracos(m)) {
+                        if (b[1] < tam) continue;
+                        if (h == null || (e == 1 && b[1] < h[1]) || (e == 2 && b[1] > h[1])) h = b;
+                        if (e == 0) break;
+                    }
+                    if (h != null) {
+                        Arrays.fill(m, h[0], h[0] + tam, t[1]);
+                        ok++;
+                    } else {
+                        int livre = 0;
+                        for (String s : m) if (s == null) livre++;
+                        if (livre >= tam) {
+                            fragmentacao++;
+                            System.out.println("   *** FALHA POR FRAGMENTAÇÃO EXTERNA: " + livre + " KB livres, mas sem buraco contíguo de " + tam + " KB.");
+                        } else {
+                            semMemoria++;
+                            System.out.println("   *** FALHA: memória insuficiente.");
+                        }
+                    }
+                } else if (t[0].equals("L")) {
+                    for (int i = 0; i < m.length; i++) if (t[1].equals(m[i])) m[i] = null;
+                }
+                mapa(m);
+            }
+            int maior = 0;
+            List<int[]> bs = buracos(m);
+            for (int[] b : bs) maior = Math.max(maior, b[1]);
+            System.out.printf("%n>> RESUMO %s: alocados=%d | falhas fragmentação=%d | falhas sem memória=%d | buracos=%d | maior buraco=%d KB%n",
+                    nomes[e], ok, fragmentacao, semMemoria, bs.size(), maior);
+        }
+    }
+
+    static void etapa2(int nf, int tp, String ops) {
+        String[] dono = new String[nf];
+        int[] pag = new int[nf];
+        boolean[] sujo = new boolean[nf];
+        Map<String, int[]> tabela = new LinkedHashMap<>(); 
+        Map<String, Integer> tam = new HashMap<>();
+        int livres = nf, falhas = 0;
+        System.out.println("\n===== ETAPA 2 - Paginação | " + nf + " frames | página = " + tp + " KB =====");
+        for (String op : ops.split(";")) {
+            String[] t = op.trim().split("\\s+");
+            System.out.println("\n>> " + op.trim());
+            if (t[0].equals("A")) {
+                int n = Integer.parseInt(t[2]), np = (n + tp - 1) / tp;
+                if (np > livres) {
+                    falhas++;
+                    System.out.println("   *** FALHA: precisa de " + np + " frames e só há " + livres + " livres.");
+                    continue;
+                }
+                int[] fr = new int[np];
+                for (int i = 0, f = 0; i < np; i++, f++) {
+                    while (dono[f] != null) f++;
+                    dono[f] = t[1];
+                    pag[f] = i;
+                    fr[i] = f;
+                }
+                livres -= np;
+                tabela.put(t[1], fr);
+                tam.put(t[1], n);
+                System.out.println("   " + np + " páginas | fragmentação interna = " + (np * tp - n) + " KB | frames (pág 0,1,...): " + Arrays.toString(fr));
+            } else if (t[0].equals("L")) {
+                int[] fr = tabela.remove(t[1]);
+                if (fr == null) continue;
+                for (int f : fr) { dono[f] = null; sujo[f] = false; }
+                livres += fr.length;
+                System.out.println("   " + fr.length + " frames devolvidos.");
+            } else if (t[0].equals("T")) {
+                int[] fr = tabela.get(t[1]);
+                int end = Integer.parseInt(t[2]);
+                if (fr == null || end < 0 || end >= tam.get(t[1])) {
+                    System.out.println("   *** ENDEREÇO INVÁLIDO (violação de acesso).");
+                    continue;
+                }
+                int p = end / tp, d = end % tp, f = fr[p];
+                System.out.println("   página = " + end + " / " + tp + " = " + p + " | deslocamento = " + end + " mod " + tp + " = " + d);
+                System.out.println("   endereço físico = " + f + " x " + tp + " + " + d + " = " + (f * tp + d));
+                if (t.length > 3 && t[3].equalsIgnoreCase("W")) {
+                    sujo[f] = true;
+                    System.out.println("   Escrita: dirty bit da página " + p + " = 1.");
+                }
+            }
+            StringBuilder sb = new StringBuilder("   Frames: ");
+            for (int f = 0; f < nf; f++) sb.append(dono[f] == null ? "-" : dono[f] + ":p" + pag[f] + (sujo[f] ? "*" : "")).append(' ');
+            System.out.println(sb + "  (* = sujo)");
+        }
+        int interna = 0;
+        for (String p : tabela.keySet()) interna += tabela.get(p).length * tp - tam.get(p);
+        System.out.println("\n>> RESUMO: recusados=" + falhas + " | frames livres=" + livres + "/" + nf
+                + " | fragmentação interna total=" + interna + " KB | fragmentação externa=0");
+    }
+
+    static void ex423() {
+        int end = 20500, tp = 4096, frame = 7;
+        System.out.println("\n===== EXERCÍCIO 4.2.3 =====");
+        System.out.println("página = " + end + " / " + tp + " = " + end / tp + " | deslocamento = " + end % tp
+                + " | endereço físico = " + frame + " x " + tp + " + " + end % tp + " = " + (frame * tp + end % tp));
+    }
+    
+    static int prox(String[] tk, int t, int pagina) {
+        for (int k = t + 1; k < tk.length; k++) if (Integer.parseInt(tk[k].replaceAll("[wW]", "")) == pagina) return k;
+        return tk.length;
+    }
+
+    static int idx(int[] v, int x) {
+        for (int i = 0; i < v.length; i++) if (v[i] == x) return i;
+        return -1;
+    }
+
+    static int[] simular(int alg, int nf, String refs, boolean mostrar) {
+        String[] tk = refs.trim().split("[\\s,]+");
+        int[] fr = new int[nf], carga = new int[nf], uso = new int[nf];
+        boolean[] ref = new boolean[nf], sujo = new boolean[nf];
+        Arrays.fill(fr, -1);
+        int faults = 0, outs = 0, ptr = 0;
+        StringBuilder[] linhas = new StringBuilder[nf + 2];
+        for (int i = 0; i < linhas.length; i++)
+            linhas[i] = new StringBuilder(i == 0 ? "Ref:     " : i == nf + 1 ? "Fault:   " : "Frame " + (i - 1) + ": ");
+        for (int t = 0; t < tk.length; t++) {
+            int p = Integer.parseInt(tk[t].replaceAll("[wW]", ""));
+            int f = idx(fr, p);
+            boolean fault = f < 0;
+            if (fault) {
+                faults++;
+                f = idx(fr, -1);
+                if (f < 0) { 
+                    if (alg == 3) {
+                        while (ref[ptr]) { ref[ptr] = false; ptr = (ptr + 1) % nf; }
+                        f = ptr;
+                        ptr = (ptr + 1) % nf;
+                    } else {
+                        int melhor = Integer.MIN_VALUE;
+                        for (int i = 0; i < nf; i++) {
+                            int s = alg == 0 ? -carga[i] : alg == 1 ? -uso[i] : prox(tk, t, fr[i]);
+                            if (s > melhor) { melhor = s; f = i; }
+                        }
+                    }
+                    if (sujo[f]) outs++;
+                }
+                fr[f] = p;
+                carga[f] = t;
+                sujo[f] = false;
+            }
+            uso[f] = t;
+            ref[f] = true;
+            if (tk[t].toLowerCase().endsWith("w")) sujo[f] = true;
+            linhas[0].append(String.format("%4s", tk[t]));
+            for (int i = 0; i < nf; i++) linhas[i + 1].append(String.format("%4s", fr[i] < 0 ? "-" : "" + fr[i]));
+            linhas[nf + 1].append(String.format("%4s", fault ? "F" : "."));
+        }
+        if (mostrar) {
+            System.out.println();
+            for (StringBuilder l : linhas) System.out.println(l);
+            System.out.printf(Locale.forLanguageTag("pt-BR"), "%nAcessos: %d | Page faults: %d (%.1f%%) | Hits: %d | Swap-ins: %d | Swap-outs: %d%n",
+                    tk.length, faults, 100.0 * faults / tk.length, tk.length - faults, faults, outs);
+        }
+        return new int[] {faults, outs};
+    }
+
+    static void etapa3(int nf, String refs) {
+        for (int a = 0; a < 4; a++) {
+            System.out.println("\n===== ETAPA 3 - " + ALGS[a] + " | " + nf + " frames =====");
+            simular(a, nf, refs, true);
+        }
+    }
+
+    /** Page faults de FIFO, LRU e Ótimo para de..ate frames (com poucos frames: thrashing). */
+    static void varrer(String refs, int de, int ate) {
+        System.out.println("\nSequência: " + refs);
+        System.out.printf("%-7s %6s %6s %6s%n", "Frames", "FIFO", "LRU", "Ótimo");
+        for (int f = de; f <= ate; f++)
+            System.out.printf("%-7d %6d %6d %6d%n", f, simular(0, f, refs, false)[0], simular(1, f, refs, false)[0], simular(2, f, refs, false)[0]);
+    }
+
+    static void belady(String refs) {
+        System.out.println("\n===== ANOMALIA DE BELADY =====");
+        varrer(refs, 3, 4);
+        System.out.println(simular(0, 4, refs, false)[0] > simular(0, 3, refs, false)[0]
+                ? "=> ANOMALIA DE BELADY: com MAIS frames o FIFO teve MAIS page faults."
+                : "=> Sem anomalia de Belady nesta sequência.");
+    }
+}
