@@ -1,0 +1,391 @@
+import java.util.InputMismatchException;
+import java.util.Scanner;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.locks.ReentrantLock;
+
+
+public class SincronismoDeadlock {
+
+    static final int CORRIDA = 1;
+    static final int deadlock = 2;
+    static final int ordenada = 3;
+    static final int GARCOM = 4;
+
+    static final int N = 5;
+    static final int PAUSA_MS = 100;
+
+
+    static void dormir(int ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            System.out.println("Thread interrompida");
+        }
+    }
+
+    static void esperarTerminar(Thread t) {
+        try {
+            t.join();
+        } catch (InterruptedException e) {
+            System.out.println("Thread interrompida");
+        }
+    }
+
+    static int tempoAleatorio() {
+        return (int) (Math.random() * 16) + 5;
+    }
+
+    static int lerNumero(Scanner teclado) {
+        try {
+            return teclado.nextInt();
+        } catch (InputMismatchException e) {
+            return -1;
+        }
+    }
+
+
+
+    static final int INCREMENTOS = 500000;
+    static int contador = 0;
+    static ReentrantLock mutexContador = new ReentrantLock();
+
+    static class ContadorThread extends Thread {
+        boolean usarMutex;
+
+        ContadorThread(boolean usarMutex) {
+            this.usarMutex = usarMutex;
+        }
+
+        public void run() {
+            for (int i = 0; i < INCREMENTOS; i++) {
+                if (usarMutex) {
+                    mutexContador.lock();
+                }
+
+                int temp = contador;
+                if (i % 1000 == 0) {
+                    Thread.yield();
+                }
+                contador = temp + 1;
+                if (usarMutex) {
+                    mutexContador.unlock();
+                }
+            }
+        }
+    }
+
+    static int somar(boolean usarMutex) {
+        contador = 0;
+        ContadorThread[] threads = new ContadorThread[4];
+        for (int i = 0; i < 4; i++) {
+            threads[i] = new ContadorThread(usarMutex);
+            threads[i].start();
+        }
+        for (int i = 0; i < 4; i++) {
+            esperarTerminar(threads[i]);
+        }
+        return contador;
+    }
+
+    static void demoCorrida() {
+        int esperado = 4 * INCREMENTOS;
+        System.out.println("=== Condição de corrida: 4 threads somando " + INCREMENTOS + " cada ===");
+        System.out.println("Valor esperado: " + esperado);
+
+        int semMutex = somar(false);
+        System.out.println("SEM mutex, valor obtido: " + semMutex);
+        if (semMutex != esperado) {
+            System.out.println("  -> INCONSISTENTE: " + (esperado - semMutex) + " atualizações foram perdidas");
+        } else {
+            System.out.println("  -> a corrida não apareceu desta vez, rode de novo");
+        }
+
+        int comMutex = somar(true);
+        System.out.println("COM mutex, valor obtido: " + comMutex);
+        if (comMutex == esperado) {
+            System.out.println("  -> CORRETO");
+        }
+    }
+
+
+
+    static class Garfo {
+        int id;
+        ReentrantLock trava = new ReentrantLock(true);
+        volatile int dono = -1;
+
+        Garfo(int id) {
+            this.id = id;
+        }
+
+        void pegar(int filosofo) {
+            trava.lock();
+            dono = filosofo;
+        }
+
+        void soltar() {
+            dono = -1;
+            trava.unlock();
+        }
+    }
+
+    static Garfo[] garfos;
+    static Filosofo[] filosofos;
+    static long fimEmMs;
+    static Semaphore garcom = new Semaphore(N - 1, true);
+
+    static ReentrantLock mutexRefeicoes = new ReentrantLock();
+    static int totalRefeicoes = 0;
+
+    static void registrarRefeicao(Filosofo f) {
+        mutexRefeicoes.lock();
+        f.refeicoes = f.refeicoes + 1;
+        totalRefeicoes = totalRefeicoes + 1;
+        mutexRefeicoes.unlock();
+    }
+
+    static int lerTotal() {
+        mutexRefeicoes.lock();
+        int total = totalRefeicoes;
+        mutexRefeicoes.unlock();
+        return total;
+    }
+
+    static void pedirAoGarcom() {
+        try {
+            garcom.acquire();
+        } catch (InterruptedException e) {
+            System.out.println("Thread interrompida");
+        }
+    }
+
+    // Cada filósofo é uma thread
+    static class Filosofo extends Thread {
+        int id;
+        int modo;
+        Garfo esquerdo;
+        Garfo direito;
+        int refeicoes = 0;
+        volatile int esperando = -1;
+
+        Filosofo(int id, int modo) {
+            this.id = id;
+            this.modo = modo;
+            this.esquerdo = garfos[id];
+            this.direito = garfos[(id + 1) % N];
+        }
+
+        public void run() {
+            while (System.currentTimeMillis() < fimEmMs) {
+                dormir(tempoAleatorio());    // pensando
+                jantar();
+            }
+        }
+
+        void jantar() {
+            Garfo primeiro = esquerdo;
+            Garfo segundo = direito;
+
+            if (modo == ordenada) {
+                if (direito.id < esquerdo.id) {
+                    primeiro = direito;
+                    segundo = esquerdo;
+                }
+            }
+
+            if (modo == GARCOM) {
+                pedirAoGarcom();
+            }
+
+            esperando = primeiro.id;
+            primeiro.pegar(id);
+
+            dormir(PAUSA_MS);
+
+            esperando = segundo.id;
+            segundo.pegar(id);
+            esperando = -1;
+
+            dormir(tempoAleatorio());
+            registrarRefeicao(this);
+
+            segundo.soltar();
+            primeiro.soltar();
+
+            if (modo == GARCOM) {
+                garcom.release();
+            }
+        }
+    }
+
+    static void iniciarFilosofos(int modo, int segundos) {
+        garfos = new Garfo[N];
+        filosofos = new Filosofo[N];
+
+        for (int i = 0; i < N; i++) {
+            garfos[i] = new Garfo(i);
+        }
+
+        if (segundos > 0) {
+            fimEmMs = System.currentTimeMillis() + segundos * 1000L;
+        } else {
+            fimEmMs = Long.MAX_VALUE;
+        }
+
+        for (int i = 0; i < N; i++) {
+            filosofos[i] = new Filosofo(i, modo);
+            filosofos[i].start();
+        }
+    }
+
+
+    static class Watchdog extends Thread {
+        public void run() {
+            int ultimoTotal = 0;
+            long ultimoProgresso = System.currentTimeMillis();
+
+            while (true) {
+                dormir(200);
+                int total = lerTotal();
+
+                if (total != ultimoTotal) {
+                    ultimoTotal = total;
+                    ultimoProgresso = System.currentTimeMillis();
+                }
+
+                if (System.currentTimeMillis() - ultimoProgresso >= 3000) {
+                    imprimirDeadlock();
+                    System.exit(0);
+                }
+            }
+        }
+    }
+
+    static void imprimirDeadlock() {
+        System.out.println();
+        System.out.println("=== DEADLOCK DETECTADO: ninguém comeu nos últimos 3 s ===");
+
+        for (int i = 0; i < N; i++) {
+            System.out.println("Garfo " + i + " está com o filósofo " + garfos[i].dono);
+        }
+        for (int i = 0; i < N; i++) {
+            int g = filosofos[i].esperando;
+            if (g >= 0) {
+                System.out.println("Filósofo " + i + " espera o garfo " + g
+                        + " (que está com o filósofo " + garfos[g].dono + ")");
+            }
+        }
+        System.out.println("Cada um espera pelo próximo e o último espera pelo primeiro: espera circular.");
+    }
+
+    static void demoDeadlock() {
+        System.out.println("=== Deadlock: cada filósofo pega o garfo esquerdo e depois o direito ===");
+        System.out.println("Se ninguém comer por 3 s, o watchdog mostra o que aconteceu.");
+
+        iniciarFilosofos(deadlock, 0);
+
+        Watchdog watchdog = new Watchdog();
+        watchdog.start();
+    }
+
+
+
+    static void imprimirContagens(int segundo) {
+        mutexRefeicoes.lock();
+        String texto = "";
+        for (int i = 0; i < N; i++) {
+            texto = texto + "F" + i + "=" + filosofos[i].refeicoes + " ";
+        }
+        int total = totalRefeicoes;
+        mutexRefeicoes.unlock();
+
+        System.out.println("[" + segundo + " s] " + texto + "| total=" + total);
+    }
+
+    static void rodarCorrigido(int modo, int segundos) {
+        if (modo == ordenada) {
+            System.out.println("=== Corrigido: aquisição ordenada de garfos (" + segundos + " s) ===");
+            System.out.println("Cada filósofo pega primeiro o garfo de menor número.");
+        } else {
+            System.out.println("=== Corrigido: semáforo garçom (" + segundos + " s) ===");
+            System.out.println("O garçom deixa no máximo " + (N - 1) + " filósofos disputarem os garfos.");
+        }
+        System.out.println("Condição de Coffman quebrada: espera circular.");
+        System.out.println();
+
+        iniciarFilosofos(modo, segundos);
+
+        int decorrido = 0;
+        while (decorrido < segundos) {
+            dormir(5000);
+            decorrido = decorrido + 5;
+            imprimirContagens(decorrido);
+        }
+
+        for (int i = 0; i < N; i++) {
+            esperarTerminar(filosofos[i]);
+        }
+
+        // Verificação final
+        int soma = 0;
+        int menor = filosofos[0].refeicoes;
+        for (int i = 0; i < N; i++) {
+            soma = soma + filosofos[i].refeicoes;
+            if (filosofos[i].refeicoes < menor) {
+                menor = filosofos[i].refeicoes;
+            }
+        }
+
+        System.out.println();
+        System.out.println("Soma das refeições de cada um: " + soma);
+        System.out.println("Contador total (protegido por mutex): " + totalRefeicoes);
+        if (soma == totalRefeicoes) {
+            System.out.println("-> Os totais batem");
+        } else {
+            System.out.println("-> ERRO: os totais são diferentes");
+        }
+
+        if (menor > 0) {
+            System.out.println("Starvation: nenhum (todos comeram; o que menos comeu fez " + menor + " refeições)");
+        } else {
+            System.out.println("Starvation: algum filósofo nunca comeu");
+        }
+        System.out.println("Deadlock: não ocorreu (o programa foi até o fim)");
+    }
+
+
+    public static void main(String[] args) {
+        Scanner teclado = new Scanner(System.in);
+
+        System.out.println("=== P2 - Sincronismo e Deadlock (Filósofos Comilões) ===");
+        System.out.println("1 - Condição de corrida (sem e com mutex)");
+        System.out.println("2 - Deadlock (cenário com falha)");
+        System.out.println("3 - Corrigido: garfos em ordem");
+        System.out.println("4 - Corrigido: semáforo garçom");
+        System.out.print("Escolha: ");
+        int opcao = lerNumero(teclado);
+
+        switch (opcao) {
+            case CORRIDA:
+                demoCorrida();
+                break;
+
+            case deadlock:
+                demoDeadlock();
+                break;
+
+            case ordenada:
+            case GARCOM:
+                System.out.print("Duração em segundos (ex.: 60): ");
+                int segundos = lerNumero(teclado);
+                if (segundos <= 0) {
+                    segundos = 60;
+                }
+                rodarCorrigido(opcao, segundos);
+                break;
+
+            default:
+                System.out.println("Opção inválida.");
+        }
+    }
+}
